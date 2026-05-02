@@ -55,8 +55,16 @@ services:
     depends_on:
       localstack:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command: "aws --endpoint-url=http://localstack:4566 sqs create-queue --queue-name user-name-changes --region us-east-1 && echo 'SQS queue created.'"
+    # amazon/aws-cli entrypoint is already "aws" — just pass subcommand args
+    command:
+      - sqs
+      - create-queue
+      - --queue-name
+      - user-name-changes
+      - --endpoint-url
+      - http://localstack:4566
+      - --region
+      - us-east-1
     environment:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
