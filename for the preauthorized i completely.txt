@@ -1,0 +1,3 @@
+for the preauthorized i completely removed the security from the gateway because it doesnt make since to keep it since i will have to  add security dependency in the services themselves in order to use the @preauthorized
+for the user-service I added a security layer that was similar to the original meaning that it has an authentication manager and doa authentication and everything including userdetails ans userservicedetails
+for the bok service I added a security layer that was similar to the project without the @preauthorized where it only checks the if the user is authenticated and checks the token only no username and password
