@@ -1,6 +1,5 @@
 package com.micro.userservice.controller;
 
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.micro.userservice.models.*;
@@ -11,19 +10,19 @@ import com.micro.userservice.models.requests.SignupRequest;
 import com.micro.userservice.service.JwtService;
 import com.micro.userservice.service.UserService;
 
-
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.web.bind.annotation.*;
+import software.amazon.awssdk.services.sqs.SqsClient;
 
 import java.util.Map;
 
@@ -32,21 +31,21 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class UserController {
 
-
     private UserService userService;
-
     private JwtService jwtService;
-
     private AuthenticationManager authenticationManager;
+    private SqsClient sqsClient;
 
-    private KafkaTemplate<String, String> kafkaTemplate;
+    @Value("${aws.sqs.queue-url}")
+    private String queueUrl;
 
     @Autowired
-    public UserController(UserService userService, JwtService jwtService, AuthenticationManager authenticationManager, KafkaTemplate<String, String> kafkaTemplate) {
+    public UserController(UserService userService, JwtService jwtService,
+                          AuthenticationManager authenticationManager, SqsClient sqsClient) {
         this.userService = userService;
         this.jwtService = jwtService;
         this.authenticationManager = authenticationManager;
-        this.kafkaTemplate = kafkaTemplate;
+        this.sqsClient = sqsClient;
     }
 
     @GetMapping("/user/{id}")
@@ -59,6 +58,7 @@ public class UserController {
                     .body(Map.of("message", "User not found with ID: " + id));
         }
     }
+
     @GetMapping("/status/{id}")
     public ResponseEntity<?> getUserStatus(@PathVariable String id) {
         try {
@@ -70,7 +70,6 @@ public class UserController {
         }
     }
 
-
     @PostMapping("/login")
     public ResponseEntity<?> authenticateAndGetToken(@RequestBody AuthRequest authRequest) {
         User user = (User) userService.loadUserByUsername(authRequest.getUsername());
@@ -79,7 +78,7 @@ public class UserController {
         );
         if (authentication.isAuthenticated()) {
             String id = userService.getUserId(user);
-            return ResponseEntity.ok(Map.of("message", jwtService.generateToken(authRequest.getUsername(),user.getAuthorities(),id)));
+            return ResponseEntity.ok(Map.of("message", jwtService.generateToken(authRequest.getUsername(), user.getAuthorities(), id)));
         } else {
             throw new UsernameNotFoundException("Invalid user request!");
         }
@@ -105,7 +104,6 @@ public class UserController {
         }
     }
 
-
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping("/change-status")
     public ResponseEntity<?> changeStatus(@RequestBody ChangeStatusReq changeStatusReq) {
@@ -130,7 +128,7 @@ public class UserController {
             user.setFirstName(changeNameReq.getFirstName());
             user.setLastName(changeNameReq.getLastName());
             userService.updateUser(user);
-            // Send a message to Kafka topic
+
             UserNameChangedEvent event = new UserNameChangedEvent(
                     changeNameReq.getId(),
                     changeNameReq.getFirstName(),
@@ -140,7 +138,7 @@ public class UserController {
             ObjectMapper mapper = new ObjectMapper();
             try {
                 String json = mapper.writeValueAsString(event);
-                kafkaTemplate.send("user-name-changes", json);
+                sqsClient.sendMessage(req -> req.queueUrl(queueUrl).messageBody(json));
             } catch (JsonProcessingException e) {
                 throw new RuntimeException("Failed to serialize event", e);
             }
@@ -151,5 +149,4 @@ public class UserController {
                     .body(Map.of("message", "User not found with ID: " + changeNameReq.getId()));
         }
     }
-
 }

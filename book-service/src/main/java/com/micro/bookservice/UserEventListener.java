@@ -6,8 +6,12 @@ import com.micro.bookservice.models.UserNameChangedEvent;
 import com.micro.bookservice.models.books.Book;
 import com.micro.bookservice.service.BookService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.Message;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 
 import java.util.List;
 
@@ -16,38 +20,54 @@ public class UserEventListener {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final BookService bookService;
+    private final SqsClient sqsClient;
+
+    @Value("${aws.sqs.queue-url}")
+    private String queueUrl;
 
     @Autowired
-    public UserEventListener(BookService bookService) {
+    public UserEventListener(BookService bookService, SqsClient sqsClient) {
         this.bookService = bookService;
+        this.sqsClient = sqsClient;
     }
 
-    @KafkaListener(topics = "user-name-changes", groupId = "notification-group")
-    public void handleUserCreated(String message) {
+    @Scheduled(fixedDelayString = "${sqs.poll-interval-ms:5000}")
+    public void pollQueue() {
         try {
-            UserNameChangedEvent event = objectMapper.readValue(message, UserNameChangedEvent.class);
-            String userId = event.getId();
-            String newFirstName = event.getFirstName();
-            String newLastName = event.getLastName();
+            ReceiveMessageRequest receiveRequest = ReceiveMessageRequest.builder()
+                    .queueUrl(queueUrl)
+                    .maxNumberOfMessages(10)
+                    .waitTimeSeconds(20)
+                    .build();
 
-            // Fetch books by creator ID
-            List<Book> books = bookService.getBooksByCreatorId(userId);
+            List<Message> messages = sqsClient.receiveMessage(receiveRequest).messages();
+            for (Message message : messages) {
+                processMessage(message.body());
+                sqsClient.deleteMessage(del -> del
+                        .queueUrl(queueUrl)
+                        .receiptHandle(message.receiptHandle())
+                        .build());
+            }
+        } catch (Exception e) {
+            System.err.println("Error polling SQS queue: " + e.getMessage());
+        }
+    }
+
+    private void processMessage(String body) {
+        try {
+            UserNameChangedEvent event = objectMapper.readValue(body, UserNameChangedEvent.class);
+            List<Book> books = bookService.getBooksByCreatorId(event.getId());
             if (books != null && !books.isEmpty()) {
                 for (Book book : books) {
-                    book.setCreatorFirstName(newFirstName);
-                    book.setCreatorLastName(newLastName);
+                    book.setCreatorFirstName(event.getFirstName());
+                    book.setCreatorLastName(event.getLastName());
                     bookService.updateBook(book);
-                    System.out.println("Updated book: " + book.getTitle() + " with new creator name: " + newFirstName + " " + newLastName);
+                    System.out.println("Updated book: " + book.getTitle()
+                            + " — new creator: " + event.getFirstName() + " " + event.getLastName());
                 }
-            } else {
-                System.out.println("No books found for user " + userId);
             }
-
         } catch (JsonProcessingException e) {
-            System.err.println("Failed to parse user event: " + e.getMessage());
-        } catch (Exception ex) {
-            System.err.println("Error updating books: " + ex.getMessage());
+            System.err.println("Failed to parse user-name-change event: " + e.getMessage());
         }
     }
 }
-
