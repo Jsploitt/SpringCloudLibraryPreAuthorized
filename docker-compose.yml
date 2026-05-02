@@ -1,41 +1,66 @@
-version: '3.9'
-
 services:
 
   #####################
   # MariaDB
   #####################
   mariadb:
-    image: mariadb:10.5
+    image: mariadb:10.11
     container_name: mariadb
-    restart: always
+    restart: unless-stopped
     ports:
       - "3307:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: Aa01117050928
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MYSQL_USER: ${DB_USERNAME:-libuser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-libpassword}
     volumes:
       - mariadb-data:/var/lib/mysql
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - spring-net
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   #####################
-  # Kafka (KRaft mode)
+  # LocalStack (SQS)
   #####################
-  kafka:
-    image: bitnami/kafka:3.9
-    container_name: kafka
+  localstack:
+    image: localstack/localstack:3
+    container_name: localstack
     ports:
-      - "9092:9092"
+      - "4566:4566"
     environment:
-      - KAFKA_KRAFT_CLUSTER_ID=kraft-cluster-12345
-      - KAFKA_CFG_NODE_ID=1
-      - KAFKA_CFG_PROCESS_ROLES=controller,broker
-      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
-      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      SERVICES: sqs
+      DEFAULT_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - localstack-data:/var/lib/localstack
+    networks:
+      - spring-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  #####################
+  # LocalStack SQS Init
+  #####################
+  localstack-init:
+    image: amazon/aws-cli:2.17.0
+    container_name: localstack-init
+    depends_on:
+      localstack:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: "aws --endpoint-url=http://localstack:4566 sqs create-queue --queue-name user-name-changes --region us-east-1 && echo 'SQS queue created.'"
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
     networks:
       - spring-net
 
@@ -45,90 +70,118 @@ services:
   eureka-server:
     build: ./eureka-server
     container_name: eureka-server
+    restart: unless-stopped
     ports:
       - "8761:8761"
     environment:
       SERVER_PORT: 8761
-      EUREKA_PREFER_IP: true
-      EUREKA_REGISTER_WITH: false
-      EUREKA_FETCH_REGISTRY: false
-      EUREKA_SERVER_URL: http://eureka-server:8761/eureka
+      EUREKA_PREFER_IP: "true"
+      EUREKA_REGISTER_WITH: "false"
+      EUREKA_FETCH_REGISTRY: "false"
+      EUREKA_URL: http://eureka-server:8761/eureka
       UUID_STORAGE_TYPE: VARCHAR
     networks:
       - spring-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8761/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
 
   ####################
-  # User Service (8085)
+  # User Service
   ####################
   user-service:
     build: ./user-service
     container_name: user-service
+    restart: unless-stopped
     depends_on:
-      - eureka-server
-      - mariadb
-      - kafka
+      eureka-server:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+      localstack-init:
+        condition: service_completed_successfully
     ports:
       - "8085:8085"
     environment:
       SERVER_PORT: 8085
-      DB_URL: jdbc:mariadb://mariadb:3306/userdb
-      DB_USER: Ahmed
-      DB_PASS: Aa01117050928
-      EUREKA_SERVER_URL: http://eureka-server:8761/eureka
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: userdb
+      DB_USERNAME: ${DB_USERNAME:-libuser}
+      DB_PASSWORD: ${DB_PASSWORD:-libpassword}
+      EUREKA_URL: http://eureka-server:8761/eureka
       HIBERNATE_DDL_AUTO: update
-      HIBERNATE_ID_MAPPINGS: false
+      HIBERNATE_ID_MAPPINGS: "false"
       UUID_STORAGE_TYPE: VARCHAR
-
+      JWT_SECRET: ${JWT_SECRET:-5367566859703373367639792F423F452848284D6251655468576D5A71347437}
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_SQS_ENDPOINT_OVERRIDE: http://localstack:4566
+      USER_NAME_CHANGES_QUEUE_URL: http://localstack:4566/000000000000/user-name-changes
     networks:
       - spring-net
 
-
   ####################
-  # Book Service (8086)
+  # Book Service
   ####################
   book-service:
     build: ./book-service
     container_name: book-service
+    restart: unless-stopped
     depends_on:
-      - eureka-server
-      - mariadb
-      - kafka
+      eureka-server:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+      localstack-init:
+        condition: service_completed_successfully
     ports:
-      - "8086:8086"  # 1:1 mapping
-    networks:
-      - spring-net
+      - "8086:8086"
     environment:
       SERVER_PORT: 8086
-      DB_URL: jdbc:mariadb://mariadb:3306/bookdb
-      DB_USER: Ahmed
-      DB_PASS: Aa01117050928
-      EUREKA_SERVER_URL: http://eureka-server:8761/eureka
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: bookdb
+      DB_USERNAME: ${DB_USERNAME:-libuser}
+      DB_PASSWORD: ${DB_PASSWORD:-libpassword}
+      EUREKA_URL: http://eureka-server:8761/eureka
       HIBERNATE_DDL_AUTO: update
-      HIBERNATE_ID_MAPPINGS: false
+      HIBERNATE_ID_MAPPINGS: "false"
       UUID_STORAGE_TYPE: VARCHAR
+      JWT_SECRET: ${JWT_SECRET:-5367566859703373367639792F423F452848284D6251655468576D5A71347437}
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_SQS_ENDPOINT_OVERRIDE: http://localstack:4566
+      USER_NAME_CHANGES_QUEUE_URL: http://localstack:4566/000000000000/user-name-changes
+      USER_SERVICE_URL: http://user-service:8085
+    networks:
+      - spring-net
 
   ###################
-  # API Gateway (8080)
+  # API Gateway
   ###################
   api-gateway:
     build: ./api-gateway
     container_name: api-gateway
+    restart: unless-stopped
     depends_on:
-      - user-service
-      - book-service
-      - eureka-server
+      eureka-server:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
-        SERVER_PORT: 8080
-        EUREKA_SERVER_URL: http://eureka-server:8761/eureka
+      SERVER_PORT: 8080
+      EUREKA_URL: http://eureka-server:8761/eureka
     networks:
       - spring-net
 
 volumes:
   mariadb-data:
+  localstack-data:
 
 networks:
   spring-net:
