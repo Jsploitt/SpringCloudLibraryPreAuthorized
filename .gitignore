@@ -1,10 +1,22 @@
-HELP.md
+# Maven build output
 target/
-.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+*.jar
+*.war
+*.ear
 
-### STS ###
+# Maven wrapper JAR (keep the wrapper scripts)
+.mvn/wrapper/maven-wrapper.jar
+
+# Spring Boot
+HELP.md
+
+# IDE – IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# IDE – Eclipse / STS
 .apt_generated
 .classpath
 .factorypath
@@ -13,21 +25,29 @@ target/
 .springBeans
 .sts4-cache
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
+# IDE – VS Code
+.vscode/
 
-### NetBeans ###
+# IDE – NetBeans
 /nbproject/private/
 /nbbuild/
 /dist/
 /nbdist/
 /.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
 
-### VS Code ###
-.vscode/
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets — never commit these
+.env
+*.env
+terraform.tfvars
+!terraform.tfvars.example
+
+# Terraform state
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/crash.log

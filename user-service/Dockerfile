@@ -1,17 +1,23 @@
-# Use official Java 17 image (small and efficient)
-FROM eclipse-temurin:17-jdk-alpine
-
-# Set environment variable
-ENV JAVA_OPTS=""
-
-# Add a volume pointing to /tmp
-VOLUME /tmp
-
-# ARG to allow flexible JAR file name
+# Stage 1: Extract Spring Boot layers for optimal caching
+FROM eclipse-temurin:21-jre-alpine AS extractor
+WORKDIR /build
 ARG JAR_FILE=target/*.jar
-
-# Copy JAR file to the container
 COPY ${JAR_FILE} app.jar
+RUN java -Djarmode=layertools -jar app.jar extract --destination extracted
 
-# Run the JAR file
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app.jar"]
+# Stage 2: Final runtime image
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+
+# Copy Spring Boot layers in dependency order (most stable first)
+COPY --from=extractor /build/extracted/dependencies/ ./
+COPY --from=extractor /build/extracted/spring-boot-loader/ ./
+COPY --from=extractor /build/extracted/snapshot-dependencies/ ./
+COPY --from=extractor /build/extracted/application/ ./
+
+EXPOSE 8085
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget -q --spider http://localhost:8085/actuator/health || exit 1
+
+ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]

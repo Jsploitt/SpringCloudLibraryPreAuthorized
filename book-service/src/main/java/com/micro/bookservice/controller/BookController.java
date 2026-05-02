@@ -9,6 +9,7 @@ import com.micro.bookservice.service.BookService;
 import com.micro.bookservice.service.JwtService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -23,6 +24,9 @@ public class BookController {
     private final BookService bookService;
     private final JwtService jwtService;
     private final RestTemplate restTemplate;
+
+    @Value("${user.service.url:http://user-service}")
+    private String userServiceUrl;
 
     @Autowired
     public BookController(BookService bookService, JwtService jwtService, RestTemplate restTemplate) {
@@ -101,7 +105,7 @@ public class BookController {
             headers.set("Authorization", "Bearer " + token);
             HttpEntity<Void> httpEntity = new HttpEntity<>(headers);
             ResponseEntity<String> response = restTemplate.exchange(
-                    "http://user-service:8085/auth/user/" + creatorId,
+                    userServiceUrl + "/auth/user/" + creatorId,
                     HttpMethod.GET,
                     httpEntity,
                     String.class
@@ -248,7 +252,7 @@ public class BookController {
         HttpEntity<Void> httpEntity = new HttpEntity<>(headers);
 
         ResponseEntity<String> response = restTemplate.exchange(
-                "http://user-service/auth/user/" + userId,
+                userServiceUrl + "/auth/user/" + userId,
                 HttpMethod.GET,
                 httpEntity,
                 String.class
