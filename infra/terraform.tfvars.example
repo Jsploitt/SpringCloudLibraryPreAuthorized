@@ -1,0 +1,21 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# NEVER commit terraform.tfvars to source control.
+
+aws_region   = "us-east-1"
+project_name = "library"
+environment  = "prod"
+
+# Set to the git SHA or "latest" during first deploy
+ecr_image_tag = "latest"
+
+# Database
+db_username       = "libadmin"
+db_password       = "CHANGE_ME_strong_password_here"
+db_instance_class = "db.t3.micro"
+
+# JWT — generate with: openssl rand -hex 32
+jwt_secret = "CHANGE_ME_64char_hex_secret_here"
+
+# Networking
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b"]

@@ -1,0 +1,110 @@
+name: Build and Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # allow manual trigger
+
+env:
+  AWS_REGION: us-east-1
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    # Required for OIDC token-based authentication (no long-lived keys)
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── 2. Java 21 setup ─────────────────────────────────────────────────────
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # ── 3. Build all modules ─────────────────────────────────────────────────
+      - name: Build with Maven
+        run: mvn clean package -DskipTests --no-transfer-progress
+
+      # ── 4. AWS credentials via OIDC ──────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── 5. Login to ECR ───────────────────────────────────────────────────────
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── 6. Build & push Docker images ────────────────────────────────────────
+      - name: Build and push Docker images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          PROJECT=library-prod
+
+          for SERVICE in eureka-server api-gateway user-service book-service; do
+            REPO="${ECR_REGISTRY}/${PROJECT}/${SERVICE}"
+            echo "Building ${SERVICE}..."
+            docker build -t "${REPO}:${IMAGE_TAG}" -t "${REPO}:latest" "./${SERVICE}"
+            docker push "${REPO}:${IMAGE_TAG}"
+            docker push "${REPO}:latest"
+            echo "Pushed ${SERVICE} → ${REPO}:${IMAGE_TAG}"
+          done
+
+      # ── 7. Terraform init & apply ────────────────────────────────────────────
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+
+      - name: Terraform Init
+        working-directory: ./infra
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ./infra
+        run: terraform validate
+
+      - name: Terraform Apply
+        working-directory: ./infra
+        env:
+          TF_VAR_ecr_image_tag: ${{ env.IMAGE_TAG }}
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+          TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
+        run: terraform apply -auto-approve
+
+      # ── 8. Force ECS redeployment ────────────────────────────────────────────
+      # Terraform's force_new_deployment handles this, but explicit update
+      # ensures the new image tag is picked up even if the task def didn't change.
+      - name: Force ECS service redeployment
+        run: |
+          CLUSTER=library-prod-cluster
+          for SERVICE in eureka-server api-gateway user-service book-service; do
+            aws ecs update-service \
+              --cluster "${CLUSTER}" \
+              --service "${SERVICE}" \
+              --force-new-deployment \
+              --region "${AWS_REGION}" \
+              --no-cli-pager
+          done
+
+      # ── 9. Summary ────────────────────────────────────────────────────────────
+      - name: Deployment summary
+        run: |
+          ALB=$(cd infra && terraform output -raw alb_dns_name)
+          echo "### Deployment complete" >> $GITHUB_STEP_SUMMARY
+          echo "- Image tag: \`${IMAGE_TAG}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- ALB URL: http://${ALB}" >> $GITHUB_STEP_SUMMARY
