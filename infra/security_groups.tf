@@ -11,6 +11,14 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    from_port   = 8761
+    to_port     = 8761
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Eureka"
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -32,7 +40,7 @@ resource "aws_security_group" "ecs" {
     to_port         = 8086
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
-    description     = "ALB → API Gateway"
+    description     = "ALB to API Gateway"
   }
 
   # Allow services within the VPC to talk to each other

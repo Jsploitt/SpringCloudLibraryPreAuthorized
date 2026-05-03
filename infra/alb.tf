@@ -22,6 +22,26 @@ resource "aws_lb_target_group" "api_gateway" {
     interval            = 30
     timeout             = 10
     healthy_threshold   = 2
+    unhealthy_threshold = 5
+    matcher             = "200"
+  }
+
+  tags = local.common_tags
+}
+
+# ── Target Group → Eureka Server ─────────────────────────────────────────────
+resource "aws_lb_target_group" "eureka_server" {
+  name        = "${local.name_prefix}-tg-eureka"
+  port        = 8761
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  health_check {
+    path                = "/actuator/health"
+    interval            = 30
+    timeout             = 10
+    healthy_threshold   = 2
     unhealthy_threshold = 3
     matcher             = "200"
   }
@@ -29,7 +49,7 @@ resource "aws_lb_target_group" "api_gateway" {
   tags = local.common_tags
 }
 
-# ── HTTP Listener ─────────────────────────────────────────────────────────────
+# ── HTTP Listener (port 80 → api-gateway) ────────────────────────────────────
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
@@ -38,6 +58,18 @@ resource "aws_lb_listener" "http" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api_gateway.arn
+  }
+}
+
+# ── Eureka Listener (port 8761 → eureka-server) ───────────────────────────────
+resource "aws_lb_listener" "eureka" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 8761
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.eureka_server.arn
   }
 }
 

@@ -103,7 +103,9 @@ resource "aws_ecs_task_definition" "user_service" {
 
     environment = concat(local.common_env, local.db_env_user, [
       { name = "SERVER_PORT", value = "8085" },
-      { name = "DB_NAME", value = "userdb" },
+      { name = "DB_NAME", value = "librarydb" },
+      { name = "DB_POOL_MAX_SIZE", value = "3" },
+      { name = "DB_POOL_MIN_IDLE", value = "1" },
       { name = "USER_NAME_CHANGES_QUEUE_URL", value = aws_sqs_queue.user_name_changes.url },
     ])
 
@@ -152,7 +154,9 @@ resource "aws_ecs_task_definition" "book_service" {
 
     environment = concat(local.common_env, local.db_env_user, [
       { name = "SERVER_PORT", value = "8086" },
-      { name = "DB_NAME", value = "bookdb" },
+      { name = "DB_NAME", value = "librarydb" },
+      { name = "DB_POOL_MAX_SIZE", value = "3" },
+      { name = "DB_POOL_MIN_IDLE", value = "1" },
       { name = "USER_NAME_CHANGES_QUEUE_URL", value = aws_sqs_queue.user_name_changes.url },
       { name = "USER_SERVICE_URL", value = "http://user-service" },
     ])
@@ -239,17 +243,26 @@ resource "aws_ecs_service" "eureka_server" {
     assign_public_ip = false
   }
 
+  load_balancer {
+    target_group_arn = aws_lb_target_group.eureka_server.arn
+    container_name   = "eureka-server"
+    container_port   = 8761
+  }
+
   force_new_deployment = true
+  depends_on           = [aws_lb_listener.eureka]
 
   tags = local.common_tags
 }
 
 resource "aws_ecs_service" "user_service" {
-  name            = "user-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.user_service.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
+  name                               = "user-service"
+  cluster                            = aws_ecs_cluster.main.id
+  task_definition                    = aws_ecs_task_definition.user_service.arn
+  desired_count                      = 1
+  launch_type                        = "FARGATE"
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   network_configuration {
     subnets          = aws_subnet.private[*].id
@@ -264,11 +277,13 @@ resource "aws_ecs_service" "user_service" {
 }
 
 resource "aws_ecs_service" "book_service" {
-  name            = "book-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.book_service.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
+  name                               = "book-service"
+  cluster                            = aws_ecs_cluster.main.id
+  task_definition                    = aws_ecs_task_definition.book_service.arn
+  desired_count                      = 1
+  launch_type                        = "FARGATE"
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   network_configuration {
     subnets          = aws_subnet.private[*].id
