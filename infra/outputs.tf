@@ -18,10 +18,6 @@ output "sqs_queue_url" {
   value       = aws_sqs_queue.user_name_changes.url
 }
 
-output "rds_endpoint" {
-  description = "RDS MariaDB endpoint"
-  value       = aws_db_instance.main.endpoint
-}
 
 output "ecs_cluster_name" {
   description = "ECS cluster name"
