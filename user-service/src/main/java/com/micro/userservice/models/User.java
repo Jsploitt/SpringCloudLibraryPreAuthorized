@@ -16,6 +16,7 @@ import java.util.UUID;
 
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 @Entity
+@Table(name = "users")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
