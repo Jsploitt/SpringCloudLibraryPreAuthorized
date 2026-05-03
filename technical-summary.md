@@ -126,7 +126,7 @@ AudioBook (extends Book directly)
 
 ## 6. Database
 
-Both services use **H2 in-memory databases** (no external DB):
+Both services use **H2 databases** (no external DB):
 
 | Service | DB URL |
 |---|---|
@@ -260,7 +260,7 @@ ALB  ──port 80──► API Gateway container
                       ├─ getUserStatus()  ──► RestTemplate lb("user-service") ──► User Service
                       ├─ getCreatorInfo() ──► RestTemplate lb("user-service") ──► User Service
                       ├─ verifyISBN()
-                      └─ bookService.addBook() ──► H2 in-memory DB
+                      └─ bookService.addBook() ──► H2 DB
 ```
 
 ---
@@ -269,7 +269,7 @@ ALB  ──port 80──► API Gateway container
 
 | Decision | Reason |
 |---|---|
-| H2 in-memory DB (no RDS) | Eliminates 5+ min RDS provision/destroy time for demo |
+| H2 DB (no RDS) | Eliminates 5+ min RDS provision/destroy time for demo |
 | No NAT Gateway | Eliminates 2–3 min destroy time + ongoing cost; public subnets used instead |
 | Terraform run locally | Avoids state management complexity; single developer owns infra |
 | OIDC for GitHub Actions | No long-lived AWS credentials stored as secrets |

@@ -1,4 +1,4 @@
-# RDS removed — services use H2 in-memory database for fast demo destroy/apply.
+# RDS removed — services use H2 database for fast demo destroy/apply.
 # Data storage factor (15-Factor #4) is satisfied by H2 (backing service,
 # swappable via env vars) and SQS (external message broker).
 

@@ -52,7 +52,7 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
-        <!-- Database (H2 in-memory — fast destroy/apply, no external DB needed) -->
+        <!-- Database (H2 — fast destroy/apply, no external DB needed) -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>

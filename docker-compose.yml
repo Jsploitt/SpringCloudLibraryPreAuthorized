@@ -65,7 +65,7 @@ services:
       retries: 10
 
   # ── User Service ──────────────────────────────────────────────────────────
-  # Database: H2 in-memory (created automatically on startup — no DB setup needed)
+  # Database: H2 (created automatically on startup — no DB setup needed)
   user-service:
     build: ./user-service
     container_name: user-service
@@ -96,7 +96,7 @@ services:
       retries: 5
 
   # ── Book Service ──────────────────────────────────────────────────────────
-  # Database: H2 in-memory (created automatically on startup — no DB setup needed)
+  # Database: H2 (created automatically on startup — no DB setup needed)
   book-service:
     build: ./book-service
     container_name: book-service

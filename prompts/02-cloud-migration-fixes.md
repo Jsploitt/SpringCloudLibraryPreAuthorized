@@ -2,7 +2,7 @@
 
 **Tool:** Claude Code (claude-sonnet-4-6)  
 **Date:** 2026-05-02 / 2026-05-03  
-**Purpose:** Migrate from RDS + NAT Gateway to H2 in-memory database for a fast destroy/restore demo; fix production bugs discovered during live deployment; update IAM for multi-repo CI/CD structure.
+**Purpose:** Migrate from RDS + NAT Gateway to H2 database for a fast destroy/restore demo; fix production bugs discovered during live deployment; update IAM for multi-repo CI/CD structure.
 
 ---
 
@@ -14,7 +14,7 @@ We have a Spring Cloud Library backend running on AWS ECS Fargate, built in the 
 
 The demo requires destroying and restoring the entire cloud environment in under 5 minutes. RDS takes 8-10 minutes to create and costs money continuously.
 
-Replace MariaDB/RDS with H2 in-memory database for both user-service and book-service:
+Replace MariaDB/RDS with H2 database for both user-service and book-service:
 - Add H2 dependency to each service's pom.xml.
 - Update application.properties to use H2 dialect and `ddl-auto=create`.
 - Remove RDS-related Terraform resources (aws_db_instance, aws_db_subnet_group, private subnets, NAT gateway).
