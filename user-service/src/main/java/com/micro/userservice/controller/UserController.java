@@ -94,7 +94,7 @@ public class UserController {
                     request.getLastName(),
                     request.getPassword(),
                     "ROLE_USER",
-                    Status.INACTIVE
+                    Status.ACTIVE
             );
             String message = userService.addUser(user);
             return ResponseEntity.status(HttpStatus.CREATED).body(Map.of("message", message));
