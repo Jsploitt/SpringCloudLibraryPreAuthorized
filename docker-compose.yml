@@ -1,32 +1,6 @@
 services:
 
-  #####################
-  # MariaDB
-  #####################
-  mariadb:
-    image: mariadb:10.11
-    container_name: mariadb
-    restart: unless-stopped
-    ports:
-      - "3307:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
-      MYSQL_USER: ${DB_USERNAME:-libuser}
-      MYSQL_PASSWORD: ${DB_PASSWORD:-libpassword}
-    volumes:
-      - mariadb-data:/var/lib/mysql
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - spring-net
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  #####################
-  # LocalStack (SQS)
-  #####################
+  # ── LocalStack: emulates AWS SQS locally (no real AWS account needed) ──────
   localstack:
     image: localstack/localstack:3
     container_name: localstack
@@ -46,16 +20,13 @@ services:
       timeout: 5s
       retries: 10
 
-  #####################
-  # LocalStack SQS Init
-  #####################
+  # Creates the SQS queue in LocalStack on first boot
   localstack-init:
     image: amazon/aws-cli:2.17.0
     container_name: localstack-init
     depends_on:
       localstack:
         condition: service_healthy
-    # amazon/aws-cli entrypoint is already "aws" — just pass subcommand args
     command:
       - sqs
       - create-queue
@@ -72,9 +43,7 @@ services:
     networks:
       - spring-net
 
-  #####################
-  # Eureka Server
-  #####################
+  # ── Eureka Server ─────────────────────────────────────────────────────────
   eureka-server:
     build: ./eureka-server
     container_name: eureka-server
@@ -87,7 +56,6 @@ services:
       EUREKA_REGISTER_WITH: "false"
       EUREKA_FETCH_REGISTRY: "false"
       EUREKA_URL: http://eureka-server:8761/eureka
-      UUID_STORAGE_TYPE: VARCHAR
     networks:
       - spring-net
     healthcheck:
@@ -96,9 +64,8 @@ services:
       timeout: 5s
       retries: 10
 
-  ####################
-  # User Service
-  ####################
+  # ── User Service ──────────────────────────────────────────────────────────
+  # Database: H2 in-memory (created automatically on startup — no DB setup needed)
   user-service:
     build: ./user-service
     container_name: user-service
@@ -106,24 +73,14 @@ services:
     depends_on:
       eureka-server:
         condition: service_healthy
-      mariadb:
-        condition: service_healthy
       localstack-init:
         condition: service_completed_successfully
     ports:
       - "8085:8085"
     environment:
       SERVER_PORT: 8085
-      DB_HOST: mariadb
-      DB_PORT: 3306
-      DB_NAME: userdb
-      DB_USERNAME: ${DB_USERNAME:-libuser}
-      DB_PASSWORD: ${DB_PASSWORD:-libpassword}
       EUREKA_URL: http://eureka-server:8761/eureka
-      HIBERNATE_DDL_AUTO: update
-      HIBERNATE_ID_MAPPINGS: "false"
-      UUID_STORAGE_TYPE: VARCHAR
-      JWT_SECRET: ${JWT_SECRET:-5367566859703373367639792F423F452848284D6251655468576D5A71347437}
+      JWT_SECRET: ${JWT_SECRET:-local-dev-secret-replace-in-prod}
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -131,10 +88,15 @@ services:
       USER_NAME_CHANGES_QUEUE_URL: http://localstack:4566/000000000000/user-name-changes
     networks:
       - spring-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8085/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
 
-  ####################
-  # Book Service
-  ####################
+  # ── Book Service ──────────────────────────────────────────────────────────
+  # Database: H2 in-memory (created automatically on startup — no DB setup needed)
   book-service:
     build: ./book-service
     container_name: book-service
@@ -142,7 +104,7 @@ services:
     depends_on:
       eureka-server:
         condition: service_healthy
-      mariadb:
+      user-service:
         condition: service_healthy
       localstack-init:
         condition: service_completed_successfully
@@ -150,16 +112,8 @@ services:
       - "8086:8086"
     environment:
       SERVER_PORT: 8086
-      DB_HOST: mariadb
-      DB_PORT: 3306
-      DB_NAME: bookdb
-      DB_USERNAME: ${DB_USERNAME:-libuser}
-      DB_PASSWORD: ${DB_PASSWORD:-libpassword}
       EUREKA_URL: http://eureka-server:8761/eureka
-      HIBERNATE_DDL_AUTO: update
-      HIBERNATE_ID_MAPPINGS: "false"
-      UUID_STORAGE_TYPE: VARCHAR
-      JWT_SECRET: ${JWT_SECRET:-5367566859703373367639792F423F452848284D6251655468576D5A71347437}
+      JWT_SECRET: ${JWT_SECRET:-local-dev-secret-replace-in-prod}
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -168,16 +122,24 @@ services:
       USER_SERVICE_URL: http://user-service:8085
     networks:
       - spring-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8086/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
 
-  ###################
-  # API Gateway
-  ###################
+  # ── API Gateway ───────────────────────────────────────────────────────────
   api-gateway:
     build: ./api-gateway
     container_name: api-gateway
     restart: unless-stopped
     depends_on:
       eureka-server:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      book-service:
         condition: service_healthy
     ports:
       - "8080:8080"
@@ -186,9 +148,14 @@ services:
       EUREKA_URL: http://eureka-server:8761/eureka
     networks:
       - spring-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
 
 volumes:
-  mariadb-data:
   localstack-data:
 
 networks:
