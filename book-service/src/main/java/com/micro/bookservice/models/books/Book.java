@@ -1,5 +1,6 @@
 package com.micro.bookservice.models.books;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import jakarta.persistence.*;
@@ -17,6 +18,7 @@ import jakarta.persistence.*;
 //@MappedSuperclass
 public abstract class Book  {
     @Id
+    @JsonProperty("ISBN")
     private String ISBN;
     private String title;
     private String author;
