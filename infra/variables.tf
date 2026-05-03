@@ -22,25 +22,6 @@ variable "ecr_image_tag" {
   default     = "latest"
 }
 
-# ── Database ──────────────────────────────────────────────────────────────────
-variable "db_username" {
-  description = "RDS master username"
-  type        = string
-  default     = "libadmin"
-}
-
-variable "db_password" {
-  description = "RDS master password"
-  type        = string
-  sensitive   = true
-}
-
-variable "db_instance_class" {
-  description = "RDS instance type"
-  type        = string
-  default     = "db.t3.micro"
-}
-
 # ── Application ───────────────────────────────────────────────────────────────
 variable "jwt_secret" {
   description = "Base64-encoded HS256 signing key for JWT"

@@ -22,21 +22,9 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
 
 # ── Shared environment variables ──────────────────────────────────────────────
 locals {
-  db_host = aws_db_instance.main.address
-  db_port = "3306"
-
   common_env = [
     { name = "AWS_REGION", value = var.aws_region },
-    { name = "HIBERNATE_DDL_AUTO", value = "update" },
-    { name = "HIBERNATE_ID_MAPPINGS", value = "false" },
-    { name = "UUID_STORAGE_TYPE", value = "VARCHAR" },
     { name = "EUREKA_URL", value = "http://${aws_lb.main.dns_name}:8761/eureka" },
-  ]
-
-  db_env_user = [
-    { name = "DB_HOST", value = local.db_host },
-    { name = "DB_PORT", value = local.db_port },
-    { name = "DB_USERNAME", value = var.db_username },
   ]
 }
 
@@ -51,12 +39,12 @@ resource "aws_ecs_task_definition" "eureka_server" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "eureka-server"
-    image     = "${aws_ecr_repository.eureka_server.repository_url}:${var.ecr_image_tag}"
-    essential = true
+    name        = "eureka-server"
+    image       = "${aws_ecr_repository.eureka_server.repository_url}:${var.ecr_image_tag}"
+    essential   = true
+    stopTimeout = 10
 
     portMappings = [{ containerPort = 8761, protocol = "tcp" }]
-    stopTimeout = 10
 
     environment = concat(local.common_env, [
       { name = "SERVER_PORT", value = "8761" },
@@ -96,23 +84,19 @@ resource "aws_ecs_task_definition" "user_service" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "user-service"
-    image     = "${aws_ecr_repository.user_service.repository_url}:${var.ecr_image_tag}"
-    essential = true
-
-    portMappings = [{ containerPort = 8085, protocol = "tcp" }]
+    name        = "user-service"
+    image       = "${aws_ecr_repository.user_service.repository_url}:${var.ecr_image_tag}"
+    essential   = true
     stopTimeout = 10
 
-    environment = concat(local.common_env, local.db_env_user, [
+    portMappings = [{ containerPort = 8085, protocol = "tcp" }]
+
+    environment = concat(local.common_env, [
       { name = "SERVER_PORT", value = "8085" },
-      { name = "DB_NAME", value = "librarydb" },
-      { name = "DB_POOL_MAX_SIZE", value = "3" },
-      { name = "DB_POOL_MIN_IDLE", value = "1" },
       { name = "USER_NAME_CHANGES_QUEUE_URL", value = aws_sqs_queue.user_name_changes.url },
     ])
 
     secrets = [
-      { name = "DB_PASSWORD", valueFrom = aws_ssm_parameter.db_password.arn },
       { name = "JWT_SECRET", valueFrom = aws_ssm_parameter.jwt_secret.arn },
     ]
 
@@ -148,24 +132,20 @@ resource "aws_ecs_task_definition" "book_service" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "book-service"
-    image     = "${aws_ecr_repository.book_service.repository_url}:${var.ecr_image_tag}"
-    essential = true
-
-    portMappings = [{ containerPort = 8086, protocol = "tcp" }]
+    name        = "book-service"
+    image       = "${aws_ecr_repository.book_service.repository_url}:${var.ecr_image_tag}"
+    essential   = true
     stopTimeout = 10
 
-    environment = concat(local.common_env, local.db_env_user, [
+    portMappings = [{ containerPort = 8086, protocol = "tcp" }]
+
+    environment = concat(local.common_env, [
       { name = "SERVER_PORT", value = "8086" },
-      { name = "DB_NAME", value = "librarydb" },
-      { name = "DB_POOL_MAX_SIZE", value = "3" },
-      { name = "DB_POOL_MIN_IDLE", value = "1" },
       { name = "USER_NAME_CHANGES_QUEUE_URL", value = aws_sqs_queue.user_name_changes.url },
       { name = "USER_SERVICE_URL", value = "http://user-service" },
     ])
 
     secrets = [
-      { name = "DB_PASSWORD", valueFrom = aws_ssm_parameter.db_password.arn },
       { name = "JWT_SECRET", valueFrom = aws_ssm_parameter.jwt_secret.arn },
     ]
 
@@ -201,12 +181,12 @@ resource "aws_ecs_task_definition" "api_gateway" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "api-gateway"
-    image     = "${aws_ecr_repository.api_gateway.repository_url}:${var.ecr_image_tag}"
-    essential = true
+    name        = "api-gateway"
+    image       = "${aws_ecr_repository.api_gateway.repository_url}:${var.ecr_image_tag}"
+    essential   = true
+    stopTimeout = 10
 
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
-    stopTimeout = 10
 
     environment = concat(local.common_env, [
       { name = "SERVER_PORT", value = "8080" },
@@ -242,9 +222,9 @@ resource "aws_ecs_service" "eureka_server" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
 
   load_balancer {
@@ -269,9 +249,9 @@ resource "aws_ecs_service" "user_service" {
   deployment_maximum_percent         = 100
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
 
   force_new_deployment = true
@@ -290,9 +270,9 @@ resource "aws_ecs_service" "book_service" {
   deployment_maximum_percent         = 100
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
 
   force_new_deployment = true
@@ -309,9 +289,9 @@ resource "aws_ecs_service" "api_gateway" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
 
   load_balancer {
