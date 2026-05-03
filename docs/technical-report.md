@@ -4,6 +4,8 @@
 
 Spring Cloud Library is a production-grade library management backend built as a set of microservices. It handles user authentication, book catalog operations, and event-driven name-change propagation. The system runs on AWS using ECS Fargate containers, with full CI/CD automation via GitHub Actions and infrastructure managed entirely by Terraform.
 
+Each service lives in its own Git repository under the **SWE455-proj-team** GitHub organisation, with an independent CI/CD pipeline that builds, publishes, and deploys automatically on every push to `main`.
+
 ---
 
 ## 2. Architecture Description
@@ -19,72 +21,104 @@ The application consists of four services:
 
 External clients reach the system exclusively through the Application Load Balancer (ALB). Traffic flows: `Client → ALB → api-gateway → user-service / book-service`. Services discover each other via Eureka using load-balanced RestTemplate.
 
-User name-change events are published to an AWS SQS queue by user-service and consumed by book-service via a scheduled poll, replacing the original Kafka dependency.
+Each service uses an **H2 database** embedded in its container. This eliminates the RDS dependency, reducing full destroy-and-restore time to roughly 5 minutes. The schema is created automatically on startup via `spring.jpa.hibernate.ddl-auto=create`, and the default admin account (`admin / Admin123!`) is seeded by `DataInitializer.java`.
+
+User name-change events are published to an AWS SQS queue by user-service and consumed by book-service via a scheduled poll (every 5 seconds).
 
 ---
 
 ## 3. Architecture Diagram
 
-```mermaid
-graph TD
-    Client["External Client"]
-    ALB["Application Load Balancer\n(port 80)"]
-    GW["api-gateway\n:8080"]
-    US["user-service\n:8085"]
-    BS["book-service\n:8086"]
-    EUR["eureka-server\n:8761"]
-    RDS[("RDS MariaDB\nuserdb / bookdb")]
-    SQS["AWS SQS\nuser-name-changes"]
-
-    Client --> ALB
-    ALB --> GW
-    GW -- "/auth/**" --> US
-    GW -- "/book/**" --> BS
-    US -- "register/discover" --> EUR
-    BS -- "register/discover" --> EUR
-    GW -- "register/discover" --> EUR
-    US --> RDS
-    BS --> RDS
-    US -- "publish event" --> SQS
-    BS -- "poll (every 5 s)" --> SQS
-    BS -- "GET /auth/user/{id}" --> US
 ```
+          ┌──────────────────────────────────────────────────────────┐
+          │                    AWS Cloud (us-east-1)                 │
+          │                                                          │
+          │   ┌─────────────────────────────────────────────────┐   │
+          │   │           Application Load Balancer              │   │
+          │   │               (port 80, public)                  │   │
+          │   └──────────────────────┬──────────────────────────┘   │
+          │                          │                               │
+          │              ┌───────────▼───────────┐                  │
+          │              │      api-gateway       │                  │
+          │              │        :8080           │                  │
+          │              └──────┬──────────┬──────┘                  │
+          │                     │          │                          │
+          │          /auth/**   │          │  /book/**               │
+          │                     │          │                          │
+          │    ┌────────────────▼──┐   ┌───▼────────────────┐       │
+          │    │   user-service    │   │   book-service     │       │
+          │    │      :8085        │   │      :8086         │       │
+          │    │   [H2 in-mem DB]  │   │  [H2 in-mem DB]   │       │
+          │    └────────┬──────────┘   └───────────┬────────┘       │
+          │             │    publish event          │ poll events    │
+          │             └──────────►  SQS Queue  ◄─┘                │
+          │                        user-name-changes                  │
+          │                                                          │
+          │   All 4 services register with Eureka Server (:8761)    │
+          │   All secrets (JWT_SECRET) stored in SSM Parameter Store │
+          │   All logs streamed to CloudWatch Log Groups             │
+          └──────────────────────────────────────────────────────────┘
+```
+
+**Local development** mirrors production exactly: docker-compose runs all four services plus LocalStack (SQS emulation). H2 databases are created automatically — no external database setup required.
 
 ---
 
 ## 4. Cloud Resources (Terraform-provisioned)
 
+Every AWS resource below is created and managed by Terraform (in the `infra` repository). No AWS Console configuration is used.
+
 | Resource | Purpose |
 |---|---|
-| VPC + Subnets | Network isolation; public subnets for ALB, private for ECS + RDS |
-| Internet Gateway + NAT Gateway | Internet access for public subnet; outbound-only for private |
+| VPC + Public Subnets (×2, multi-AZ) | Network isolation; all services in public subnets (no NAT needed) |
+| Internet Gateway | Outbound internet access for ECS tasks pulling from ECR |
 | Application Load Balancer | Single public entry point; routes `/auth/*` and `/book/*` |
-| ECS Fargate Cluster | Serverless container runtime |
-| 4× ECS Task Definitions | One per service, Java 21 images |
+| ECS Fargate Cluster | Serverless container runtime — no EC2 instances to manage |
+| 4× ECS Task Definitions | One per service, Java 21 images pulled from ECR |
 | 4× ECS Services | `desired_count = 1`; `force_new_deployment = true` |
 | 4× ECR Repositories | Docker image storage with lifecycle cleanup |
-| RDS MariaDB 10.11 | Managed relational DB in private subnet |
-| SQS Queue | Async user-name-change event bus |
-| 4× CloudWatch Log Groups | Centralised structured logs |
-| IAM Roles + Policies | Task execution (ECR pull, CW logs) + Task (SQS access, SSM read) |
-| SSM Parameter Store | `DB_PASSWORD` and `JWT_SECRET` stored as SecureString |
-| Security Groups | Strict least-privilege: ALB → ECS → RDS |
+| SQS Queue (`user-name-changes`) | Async event bus for user name-change propagation |
+| 4× CloudWatch Log Groups | Centralised structured logs from all containers |
+| IAM — ECS Task Execution Role | Allows ECS to pull images from ECR and write to CloudWatch |
+| IAM — ECS Task Role | Grants containers access to SQS and SSM |
+| IAM — GitHub Actions OIDC Role | Allows GitHub Actions to deploy without long-lived AWS keys |
+| OIDC Identity Provider (GitHub) | Federates GitHub Actions tokens to AWS IAM (`prevent_destroy = true`) |
+| SSM Parameter Store | `JWT_SECRET` stored as SecureString; injected at container startup |
+| Security Groups | ALB (port 80 public) → ECS (ports 8080–8086 from ALB + VPC CIDR) |
+
+> **Why public subnets / no NAT?** Removing NAT Gateway eliminates ~$32/month in AWS costs and allows `terraform destroy` to complete in ~2 minutes instead of 5+. ECS tasks pull images directly from ECR over the internet gateway. This is the correct trade-off for a demo/educational environment.
+
+> **Why H2 instead of RDS?** RDS creation takes 8–10 minutes and costs money continuously. H2 starts in seconds, costs nothing, and the schema is recreated automatically on every deploy — enabling the full destroy-and-restore demo in under 5 minutes.
 
 ---
 
 ## 5. CI/CD Pipeline
 
+The project uses **5 independent GitHub repositories** under the `SWE455-proj-team` organisation, each with its own GitHub Actions pipeline.
+
+### Service Repositories (user-service, book-service, api-gateway, eureka-server)
+
 On every `push` to `main`:
 
-1. **Checkout** — source cloned.
-2. **Java 21 + Maven cache** — dependencies downloaded once.
-3. **`mvn clean package -DskipTests`** — all four fat JARs built.
-4. **OIDC authentication** — ephemeral AWS credentials via `aws-actions/configure-aws-credentials`; no long-lived keys in GitHub.
+1. **Checkout** — source code cloned.
+2. **Java 21 + Maven cache** — dependencies downloaded once and cached.
+3. **`mvn clean package -DskipTests`** — fat JAR built.
+4. **OIDC authentication** — ephemeral AWS credentials via `aws-actions/configure-aws-credentials`; no long-lived keys stored in GitHub.
 5. **ECR login** — `aws-actions/amazon-ecr-login`.
-6. **Docker build & push** — each service tagged with git SHA and `latest`.
-7. **Terraform init/validate/apply** — infra changes applied; `TF_VAR_ecr_image_tag` injects the new SHA.
-8. **ECS force redeploy** — `aws ecs update-service --force-new-deployment` ensures containers restart.
-9. **Summary** — ALB DNS printed to the job summary.
+6. **Docker build & push** — image tagged with the git SHA and `latest`, pushed to ECR.
+7. **ECS force redeploy** — `aws ecs update-service --force-new-deployment` restarts the container with the new image.
+
+### Infrastructure Repository (infra)
+
+Three workflows:
+
+| Workflow | Trigger | Action |
+|---|---|---|
+| `infra-apply.yml` | Push to `main` | `terraform init` + `terraform apply -auto-approve` |
+| `infra-apply-manual.yml` | Manual (`workflow_dispatch`) | Same as above, on demand |
+| `infra-destroy.yml` | Manual (`workflow_dispatch`) | `terraform destroy -auto-approve` |
+
+All workflows authenticate to AWS via OIDC — the GitHub Actions IAM role trusts all five `SWE455-proj-team` repositories.
 
 ---
 
@@ -92,21 +126,21 @@ On every `push` to `main`:
 
 | Factor | Implementation |
 |---|---|
-| **I. Codebase** | Single Git repository; one codebase deployed to all environments |
-| **II. Dependencies** | All dependencies declared in `pom.xml`; no implicit system packages |
-| **III. Config** | All environment-specific config in environment variables (`DB_HOST`, `JWT_SECRET`, etc.) |
-| **IV. Backing services** | MariaDB and SQS treated as attached resources, referenced via env vars |
-| **V. Build/Release/Run** | Maven produces immutable JARs → Docker image (release) → ECS service (run) |
-| **VI. Processes** | Stateless Spring Boot processes; all state in MariaDB or SQS |
-| **VII. Port binding** | Each service exports via `server.port`; no runtime injection of HTTP server |
-| **VIII. Concurrency** | ECS desired_count can be scaled per service independently |
-| **IX. Disposability** | Graceful shutdown enabled (`server.shutdown=graceful`, 30 s timeout); fast start with layered Docker images |
-| **X. Dev/Prod parity** | Same Docker images in docker-compose (local) and ECS (prod); LocalStack emulates SQS locally |
-| **XI. Logs** | All services write to stdout/stderr; captured by CloudWatch Logs |
-| **XII. Admin processes** | DB schema managed via `hibernate.ddl-auto=update`; one-off tasks can be run as ECS run-task |
-| **XIII. API first** | REST API documented in `docs/api-documentation.md`; contract-driven |
-| **XIV. Telemetry** | Spring Boot Actuator `/actuator/health` on all services; CloudWatch metrics via container insights |
-| **XV. Auth** | JWT-based stateless authentication; secrets stored in SSM Parameter Store |
+| **I. Codebase** | One repository per deployable service (`SWE455-proj-team/{service}`); each repo has exactly one CI/CD pipeline and is deployed independently |
+| **II. Dependencies** | All dependencies declared in `pom.xml`; Docker image isolates the runtime — no implicit system packages |
+| **III. Config** | All environment-specific config in environment variables (`JWT_SECRET`, `EUREKA_URL`, `AWS_REGION`, `USER_NAME_CHANGES_QUEUE_URL`, etc.); secrets injected from AWS SSM at container startup |
+| **IV. Backing services** | SQS treated as an attached resource referenced via env vars (`USER_NAME_CHANGES_QUEUE_URL`); H2 is embedded per-container; LocalStack provides a drop-in SQS replacement locally |
+| **V. Build/Release/Run** | Maven produces an immutable JAR (build) → Docker image tagged with git SHA (release) → ECS Fargate service (run); stages are strictly separated |
+| **VI. Processes** | Stateless Spring Boot processes; no in-memory session state; all persistent state in H2 (per container) or SQS (shared) |
+| **VII. Port binding** | Each service binds to `server.port` at startup and exports itself; no runtime HTTP server injection |
+| **VIII. Concurrency** | ECS `desired_count` can be scaled per service independently; stateless processes allow horizontal scaling |
+| **IX. Disposability** | Graceful shutdown enabled (`server.shutdown=graceful`, 30 s timeout); fast startup with layered Docker images and H2 (no waiting for external DB connection) |
+| **X. Dev/Prod parity** | Same Docker images run in `docker-compose` (local) and ECS (prod); LocalStack emulates SQS identically; H2 used in both environments |
+| **XI. Logs** | All services write structured logs to `stdout`/`stderr`; captured by CloudWatch Logs in production; visible via `docker-compose logs` locally |
+| **XII. Admin processes** | H2 schema created via `ddl-auto=create` on startup; default admin user seeded by `DataInitializer.java` (ApplicationRunner); one-off tasks can be run as ECS `run-task` |
+| **XIII. API first** | REST API fully documented in `docs/api-documentation.md`; contract defined before implementation |
+| **XIV. Telemetry** | Spring Boot Actuator `/actuator/health` on all services (used by ECS health checks and docker-compose health checks); CloudWatch Logs for centralised observability |
+| **XV. Auth & Authz** | JWT-based stateless authentication (HS256, 1-hour TTL); `ROLE_ADMIN` / `ROLE_USER` role-based access control; JWT secret stored in AWS SSM Parameter Store as SecureString |
 
 ---
 
@@ -115,136 +149,194 @@ On every `push` to `main`:
 ### Prerequisites
 
 - AWS account with sufficient IAM permissions
-- AWS CLI configured: `aws configure`
-- Terraform ≥ 1.5: `terraform version`
+- AWS CLI configured: `aws configure` (for initial Terraform bootstrap only)
+- Terraform ≥ 1.5
 - Docker Desktop running
 - Java 21 + Maven
 
-### First-time deploy
+### First-time bootstrap (local Terraform apply)
+
+The OIDC provider and GitHub Actions IAM role must be created once before GitHub Actions can take over.
 
 ```bash
-# 1. Clone the repo
-git clone <repo_url>
-cd SpringCloudLibraryPreAuthorized
-
-# 2. Configure Terraform variables
-cp infra/terraform.tfvars.example infra/terraform.tfvars
-# Edit infra/terraform.tfvars with your values
-
-# 3. Build JARs
-mvn clean package -DskipTests
-
-# 4. Init and deploy infrastructure
+# 1. Clone the infra repo
+git clone https://github.com/SWE455-proj-team/infra
 cd infra
+
+# 2. Configure variables
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars: set jwt_secret, aws_region, account_id
+
+# 3. Init and apply
 terraform init
 terraform apply
-
-# 5. Get the ALB DNS name
-terraform output alb_dns_name
-
-# 6. Build and push Docker images (replace ACCOUNT_ID and REGION)
-cd ..
-REGISTRY="<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com"
-aws ecr get-login-password | docker login --username AWS --password-stdin $REGISTRY
-
-for SERVICE in eureka-server api-gateway user-service book-service; do
-  docker build -t "${REGISTRY}/library-prod/${SERVICE}:latest" ./${SERVICE}
-  docker push "${REGISTRY}/library-prod/${SERVICE}:latest"
-done
-
-# 7. Force ECS redeployment
-for SERVICE in eureka-server api-gateway user-service book-service; do
-  aws ecs update-service --cluster library-prod-cluster --service $SERVICE --force-new-deployment
-done
 ```
 
-### Subsequent deploys
+### Subsequent deploys (automated)
 
-Push to `main` — the GitHub Actions workflow handles everything automatically.
+Push to `main` in any service repo — GitHub Actions handles build, push to ECR, and ECS redeploy automatically.
+
+Push to `main` in the `infra` repo — Terraform applies any infrastructure changes automatically.
+
+### First-time image push (after initial `terraform apply`)
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGION=us-east-1
+REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+
+aws ecr get-login-password --region $REGION | \
+  docker login --username AWS --password-stdin $REGISTRY
+
+for SERVICE in eureka-server api-gateway user-service book-service; do
+  docker build -t "${REGISTRY}/library-prod-${SERVICE}:latest" \
+    https://github.com/SWE455-proj-team/${SERVICE}
+  docker push "${REGISTRY}/library-prod-${SERVICE}:latest"
+done
+
+for SERVICE in eureka-server api-gateway user-service book-service; do
+  aws ecs update-service \
+    --cluster library-prod-cluster \
+    --service library-prod-${SERVICE} \
+    --force-new-deployment
+done
+```
 
 ---
 
 ## 8. Destroy and Restore Demo
 
-### Destroy (complete teardown in ~5 minutes)
+This is the core demo: the entire cloud environment is destroyed and fully restored using only code.
+
+### Destroy (~2 minutes)
+
+Trigger the `infra-destroy.yml` workflow manually in GitHub Actions, or run locally:
 
 ```bash
 cd infra
 terraform destroy -auto-approve
 ```
 
-This removes all AWS resources: ECS cluster, ALB, RDS, SQS queue, ECR repos, VPC.
+This removes all AWS resources: ECS cluster, ALB, SQS queue, ECR repos, VPC, security groups, CloudWatch groups. The OIDC provider and GitHub Actions IAM role are **protected** by `lifecycle { prevent_destroy = true }` — they survive the destroy so the pipeline can re-deploy.
 
-### Restore from scratch
+### Restore (~3 minutes infra + ~2 minutes ECS startup)
+
+Trigger the `infra-apply-manual.yml` workflow in GitHub Actions, or run locally:
 
 ```bash
 cd infra
 terraform apply -auto-approve
-# Then push to main (or manually re-push images and force ECS redeploy as above)
 ```
 
-The system returns to a working state without any manual AWS Console intervention.
+Then push any commit to each service repository to trigger the service CI/CD pipelines, or manually trigger each `deploy-*.yml` workflow. The system returns to a fully working state without any AWS Console interaction.
+
+**Total destroy → working: ~5 minutes.**
 
 ---
 
 ## 9. Local Development
 
 ```bash
-# Build JARs first
-mvn clean package -DskipTests
+# Build all JARs first (or let docker-compose build them)
+mvn clean package -DskipTests   # from each service directory
 
-# Start all services
+# Start everything
 docker-compose up --build
 
-# Verify
-curl http://localhost:8080/auth/signup -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","email":"a@a.com","firstName":"Ad","lastName":"Min","password":"pass"}'
+# Services available at:
+# Eureka Dashboard:  http://localhost:8761
+# API Gateway:       http://localhost:8080
+# User Service:      http://localhost:8085
+# Book Service:      http://localhost:8086
+# LocalStack (SQS):  http://localhost:4566
 ```
 
-Services: Eureka (`8761`), Gateway (`8080`), User (`8085`), Book (`8086`), LocalStack (`4566`).
+Default admin credentials (seeded automatically): `admin / Admin123!`
 
 ---
 
 ## 10. Testing
 
+All requests go through the API Gateway (port 8080 locally, ALB in production).
+
+Production base URL: `http://library-prod-alb-2029213111.us-east-1.elb.amazonaws.com`
+
 ```bash
-# 1. Sign up
-curl -X POST http://localhost:8080/auth/signup \
+BASE=http://localhost:8080
+# For production: BASE=http://library-prod-alb-2029213111.us-east-1.elb.amazonaws.com
+
+# 1. Sign up a new user (auto-activated)
+curl -X POST $BASE/auth/signup \
   -H "Content-Type: application/json" \
-  -d '{"username":"testuser","email":"t@t.com","firstName":"Test","lastName":"User","password":"pass"}'
+  -d '{"username":"alice","email":"alice@example.com","firstName":"Alice","lastName":"Wonder","password":"pass"}'
 
-# 2. Log in (admin must be seeded or status changed)
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+# 2. Login as admin
+TOKEN=$(curl -s -X POST $BASE/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"testuser","password":"pass"}' | jq -r '.message')
+  -d '{"username":"admin","password":"Admin123!"}' | jq -r '.message')
 
-# 3. Activate account (requires admin token)
-# curl -X POST http://localhost:8080/auth/change-status ...
-
-# 4. Add a book (admin + active)
-curl -X POST http://localhost:8080/book/add \
+# 3. Add a book (admin only)
+curl -X POST $BASE/book/add \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"type":"PrintedBook","ISBN":"1232","title":"Test Book","author":"Author","genre":"Fiction","numOfPages":200,"hardcover":false}'
+  -d '{"type":"PrintedBook","ISBN":"1232","title":"Clean Code","author":"Martin","genre":"Technology","numOfPages":431,"hardcover":true}'
 
-# 5. List books
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/book/all
+# 4. Add an audiobook
+curl -X POST $BASE/book/add \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"AudioBook","ISBN":"2311","title":"Dune","author":"Herbert","genre":"SciFi","narrationLength":21}'
+
+# 5. Add an e-book
+curl -X POST $BASE/book/add \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"EBook","ISBN":"3121","title":"The Pragmatic Programmer","author":"Thomas","genre":"Technology","fileFormat":"PDF"}'
+
+# 6. List all books
+curl -H "Authorization: Bearer $TOKEN" $BASE/book/all
+
+# 7. Filter books
+curl -H "Authorization: Bearer $TOKEN" "$BASE/book/filter?genre=Technology"
+
+# 8. Test name-change SQS event propagation
+curl -X POST $BASE/auth/change-name \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"<user-uuid>","firstName":"Jane","lastName":"Smith"}'
 ```
 
 ---
 
 ## 11. Known Limitations
 
-- **Single-AZ NAT Gateway** — cost-optimized for a demo; production should use multi-AZ.
-- **`desired_count = 1`** — no horizontal scaling configured; add auto-scaling for production load.
+- **`desired_count = 1`** — no horizontal scaling configured; add ECS auto-scaling for production load.
 - **HTTP only** — no TLS termination on the ALB; add an ACM certificate and HTTPS listener for production.
+- **H2 is ephemeral** — data is lost when a container restarts. This is intentional for the demo (enables fast destroy/restore). A production system would use RDS PostgreSQL with Flyway migrations.
+- **Public subnets only** — ECS tasks are in public subnets with a public IP. A production system would use private subnets + NAT Gateway or VPC endpoints.
 - **Eureka in ECS** — service discovery via Eureka works but AWS Cloud Map is a more native option.
-- **`ddl-auto=update`** — acceptable for demo; use Flyway/Liquibase for production schema migrations.
-- **No admin seeding** — a user must be manually promoted to `ROLE_ADMIN` via direct DB update after first signup.
+- **Single-region** — no cross-region redundancy; acceptable for a university demo.
 
 ---
 
-## 12. AI Prompt Appendix
+## 12. Source Code Repositories
 
-See [`../prompts/01-project-build.md`](../prompts/01-project-build.md) for the complete prompt used to generate this project structure.
+| Repository | URL |
+|---|---|
+| `eureka-server` | https://github.com/SWE455-proj-team/eureka-server |
+| `api-gateway` | https://github.com/SWE455-proj-team/api-gateway |
+| `user-service` | https://github.com/SWE455-proj-team/user-service |
+| `book-service` | https://github.com/SWE455-proj-team/book-service |
+| `infra` (Terraform) | https://github.com/SWE455-proj-team/infra |
+
+---
+
+## 13. AI Prompt Appendix
+
+AI (Claude Code, claude-sonnet-4-6) was used throughout this project. High-level prompts are recorded below and in the `prompts/` directory.
+
+- **Prompt 01 — Initial project build:** [`../prompts/01-project-build.md`](../prompts/01-project-build.md)  
+  Transform an existing Spring Cloud backend into a production-deployable AWS system with Terraform, GitHub Actions OIDC, SQS, Docker, and full 15-Factor compliance.
+
+- **Prompt 02 — Cloud migration & fixes:** [`../prompts/02-cloud-migration-fixes.md`](../prompts/02-cloud-migration-fixes.md)  
+  Migrate from RDS + NAT Gateway to H2 database for fast demo cycles; fix H2 reserved-keyword issues; seed default admin; fix Jackson deserialization; update IAM trust policy for multi-repo structure.
