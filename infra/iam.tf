@@ -83,7 +83,14 @@ resource "aws_iam_role" "github_actions" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:Jsploitt/SpringCloudLibraryPreAuthorized:*"
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:SWE455-proj-team/user-service:*",
+            "repo:SWE455-proj-team/book-service:*",
+            "repo:SWE455-proj-team/api-gateway:*",
+            "repo:SWE455-proj-team/eureka-server:*",
+            "repo:SWE455-proj-team/infra:*",
+            "repo:Jsploitt/SpringCloudLibraryPreAuthorized:*"
+          ]
         }
       }
     }]
