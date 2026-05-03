@@ -56,6 +56,7 @@ resource "aws_ecs_task_definition" "eureka_server" {
     essential = true
 
     portMappings = [{ containerPort = 8761, protocol = "tcp" }]
+    stopTimeout = 10
 
     environment = concat(local.common_env, [
       { name = "SERVER_PORT", value = "8761" },
@@ -100,6 +101,7 @@ resource "aws_ecs_task_definition" "user_service" {
     essential = true
 
     portMappings = [{ containerPort = 8085, protocol = "tcp" }]
+    stopTimeout = 10
 
     environment = concat(local.common_env, local.db_env_user, [
       { name = "SERVER_PORT", value = "8085" },
@@ -151,6 +153,7 @@ resource "aws_ecs_task_definition" "book_service" {
     essential = true
 
     portMappings = [{ containerPort = 8086, protocol = "tcp" }]
+    stopTimeout = 10
 
     environment = concat(local.common_env, local.db_env_user, [
       { name = "SERVER_PORT", value = "8086" },
@@ -203,6 +206,7 @@ resource "aws_ecs_task_definition" "api_gateway" {
     essential = true
 
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
+    stopTimeout = 10
 
     environment = concat(local.common_env, [
       { name = "SERVER_PORT", value = "8080" },
