@@ -22,48 +22,14 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # ── 2. Java 21 setup ─────────────────────────────────────────────────────
-      - name: Set up Java 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-          cache: maven
-
-      # ── 3. Build all modules ─────────────────────────────────────────────────
-      - name: Build with Maven
-        run: mvn clean package -DskipTests --no-transfer-progress
-
-      # ── 4. AWS credentials via OIDC ──────────────────────────────────────────
+      # ── 2. AWS credentials via OIDC ──────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # ── 5. Login to ECR ───────────────────────────────────────────────────────
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # ── 6. Build & push Docker images ────────────────────────────────────────
-      - name: Build and push Docker images
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-        run: |
-          PROJECT=library-prod
-
-          for SERVICE in eureka-server api-gateway user-service book-service; do
-            REPO="${ECR_REGISTRY}/${PROJECT}/${SERVICE}"
-            echo "Building ${SERVICE}..."
-            docker build -t "${REPO}:${IMAGE_TAG}" -t "${REPO}:latest" "./${SERVICE}"
-            docker push "${REPO}:${IMAGE_TAG}"
-            docker push "${REPO}:latest"
-            echo "Pushed ${SERVICE} → ${REPO}:${IMAGE_TAG}"
-          done
-
-      # ── 7. Terraform init & apply ────────────────────────────────────────────
+      # ── 3. Terraform — provision infra (creates ECR repos first) ─────────────
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -86,9 +52,40 @@ jobs:
           TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
         run: terraform apply -auto-approve
 
-      # ── 8. Force ECS redeployment ────────────────────────────────────────────
-      # Terraform's force_new_deployment handles this, but explicit update
-      # ensures the new image tag is picked up even if the task def didn't change.
+      # ── 4. Java 21 setup ─────────────────────────────────────────────────────
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # ── 5. Build all modules ─────────────────────────────────────────────────
+      - name: Build with Maven
+        run: mvn clean package -DskipTests --no-transfer-progress
+
+      # ── 6. Login to ECR ───────────────────────────────────────────────────────
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── 7. Build & push Docker images ────────────────────────────────────────
+      - name: Build and push Docker images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          PROJECT=library-prod
+
+          for SERVICE in eureka-server api-gateway user-service book-service; do
+            REPO="${ECR_REGISTRY}/${PROJECT}/${SERVICE}"
+            echo "Building ${SERVICE}..."
+            docker build -t "${REPO}:${IMAGE_TAG}" -t "${REPO}:latest" "./${SERVICE}"
+            docker push "${REPO}:${IMAGE_TAG}"
+            docker push "${REPO}:latest"
+            echo "Pushed ${SERVICE} → ${REPO}:${IMAGE_TAG}"
+          done
+
+      # ── 8. Force ECS redeployment with new images ────────────────────────────
       - name: Force ECS service redeployment
         run: |
           CLUSTER=library-prod-cluster
