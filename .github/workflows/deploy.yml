@@ -12,7 +12,6 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    # Required for OIDC token-based authentication (no long-lived keys)
     permissions:
       id-token: write
       contents: read
@@ -22,37 +21,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # ── 2. AWS credentials via OIDC ──────────────────────────────────────────
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      # ── 3. Terraform — provision infra (creates ECR repos first) ─────────────
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.9"
-
-      - name: Terraform Init
-        working-directory: ./infra
-        run: terraform init
-
-      - name: Terraform Validate
-        working-directory: ./infra
-        run: terraform validate
-
-      - name: Terraform Apply
-        working-directory: ./infra
-        env:
-          TF_VAR_ecr_image_tag: ${{ env.IMAGE_TAG }}
-          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-          TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
-          TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
-        run: terraform apply -auto-approve
-
-      # ── 4. Java 21 setup ─────────────────────────────────────────────────────
+      # ── 2. Java 21 setup ─────────────────────────────────────────────────────
       - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
@@ -60,16 +29,23 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      # ── 5. Build all modules ─────────────────────────────────────────────────
+      # ── 3. Build all modules ─────────────────────────────────────────────────
       - name: Build with Maven
         run: mvn clean package -DskipTests --no-transfer-progress
 
-      # ── 6. Login to ECR ───────────────────────────────────────────────────────
+      # ── 4. AWS credentials via OIDC ──────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── 5. Login to ECR ───────────────────────────────────────────────────────
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ── 7. Build & push Docker images ────────────────────────────────────────
+      # ── 6. Build & push Docker images ────────────────────────────────────────
       - name: Build and push Docker images
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -85,7 +61,7 @@ jobs:
             echo "Pushed ${SERVICE} → ${REPO}:${IMAGE_TAG}"
           done
 
-      # ── 8. Force ECS redeployment with new images ────────────────────────────
+      # ── 7. Force ECS redeployment with new images ────────────────────────────
       - name: Force ECS service redeployment
         run: |
           CLUSTER=library-prod-cluster
@@ -98,10 +74,10 @@ jobs:
               --no-cli-pager
           done
 
-      # ── 9. Summary ────────────────────────────────────────────────────────────
+      # ── 8. Summary ────────────────────────────────────────────────────────────
       - name: Deployment summary
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          ALB=$(cd infra && terraform output -raw alb_dns_name)
           echo "### Deployment complete" >> $GITHUB_STEP_SUMMARY
           echo "- Image tag: \`${IMAGE_TAG}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- ALB URL: http://${ALB}" >> $GITHUB_STEP_SUMMARY
