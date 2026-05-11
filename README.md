@@ -67,7 +67,7 @@ Pipeline flow:
 
 ## Operations notes
 
-- ALB DNS is the primary entrypoint (`terraform output alb_dns_name`)
+- ALB DNS is the primary entry point (`terraform output alb_dns_name`)
 - Eureka is exposed on ALB port `8761` for service-registry visibility
 - `terraform destroy` tears down most resources, while OIDC bootstrap resources are protected in Terraform
 
